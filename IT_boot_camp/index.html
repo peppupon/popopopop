@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>トゲトゲ・バトル ULTIMATE - PERFECT EDITION -</title>
+    <style>
+        body { background-color: #1a1a1a; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; overflow: hidden; font-family: sans-serif; }
+        canvas { border-radius: 24px; box-shadow: 0 20px 60px rgba(0,0,0,0.8); background-color: #000; }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="400" height="400"></canvas>
+
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+// --- サウンドエンジン ---
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playSound(freq, type, duration, vol) {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+}
+
+const マス = 40, 中心X = 200, 中心Y = 200, 十字サイズ = 2;
+let スコア = 0, かすりボーナス = 0, ゲーム終了 = false, ゲーム開始前 = true, カウントダウン中 = false;
+let 死亡演出中 = false, 死亡時刻 = 0, 死亡フレーム = 0;
+let カウント = 5, シェイク = 0, 敗北色 = "#FF7F7F", タイトルフレーム = 0, 青X = 0, 赤Y = 0;
+let 前回の青X = 0, 前回の赤Y = 0;
+let プレイ開始フレーム = 0;
+
+const モードリスト = ["NORMAL", "HARD", "EXPERT"];
+let モード指数 = 0, モード = "NORMAL", たまリスト = [], パーティクル = [], メニューエフェクト = [];
+let キーマップ = { "ArrowLeft": "L", "ArrowRight": "R", "ArrowUp": "U", "ArrowDown": "D" };
+
+const COLOR_BLUE = "127, 179, 255";      
+const COLOR_RED = "255, 127, 127";       
+const COLOR_PURPLE = "193, 153, 255";    
+const COLOR_BLUE_PURPLE = "150, 140, 255"; 
+const COLOR_RED_PURPLE = "230, 130, 230";  
+const COLOR_WHITE = "255, 255, 255";
+
+window.addEventListener("keydown", (e) => {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (ゲーム開始前 || ゲーム終了) {
+        if (死亡演出中) return;
+        if (e.code === "Space") { playSound(440, "sine", 0.1, 0.2); スタート準備(); }
+        else if (e.code === "ArrowRight") { 
+            if (モード指数 < 2) { playSound(660, "sine", 0.05, 0.1); モード指数++; モード = モードリスト[モード指数]; メニューエフェクト = []; }
+        }
+        else if (e.code === "ArrowLeft") { 
+            if (モード指数 > 0) { playSound(660, "sine", 0.05, 0.1); モード指数--; モード = モードリスト[モード指数]; メニューエフェクト = []; }
+        }
+        return;
+    }
+    前回の青X = 青X; 前回の赤Y = 赤Y;
+    const 入力 = キーマップ[e.code];
+    let moved = false;
+    if (入力 === "L" && 青X > -十字サイズ) { 青X--; moved = true; }
+    if (入力 === "R" && 青X < 十字サイズ) { 青X++; moved = true; }
+    if (入力 === "U" && 赤Y > -十字サイズ) { 赤Y--; moved = true; }
+    if (入力 === "D" && 赤Y < 十字サイズ) { 赤Y++; moved = true; }
+    if (moved) playSound(1200, "sine", 0.02, 0.04);
+});
+
+function スタート準備() {
+    スコア = 0; かすりボーナス = 0; ゲーム終了 = false; ゲーム開始前 = false; 死亡演出中 = false;
+    たまリスト = []; パーティクル = []; 青X = 0; 赤Y = 0; 前回の青X = 0; 前回の赤Y = 0;
+    プレイ開始フレーム = タイトルフレーム;
+    if (モード !== "NORMAL") {
+        const コード = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"], キー = ["L", "R", "U", "D"];
+        for (let i = コード.length - 1; i > 0; i--) { const r = Math.floor(Math.random() * (i + 1)); [キー[i], キー[r]] = [キー[r], キー[i]]; }
+        コード.forEach((c, index) => キーマップ[c] = キー[index]);
+    } else { キーマップ = { "ArrowLeft": "L", "ArrowRight": "R", "ArrowUp": "U", "ArrowDown": "D" }; }
+    if (モード === "HARD") {
+        カウントダウン中 = true; カウント = 5;
+        playSound(523, "sine", 0.1, 0.2);
+        let timer = setInterval(() => { 
+            カウント--; 
+            if (カウント > 0) playSound(523, "sine", 0.1, 0.2);
+            else { playSound(1046, "sine", 0.3, 0.2); clearInterval(timer); カウントダウン中 = false; }
+        }, 1000);
+    } else { カウントダウン中 = false; }
+}
+
+class たま {
+    constructor() {
+        const 方向 = Math.floor(Math.random() * 4);
+        const レーン = Math.floor(Math.random() * 5) - 2;
+        const 経過秒数 = (タイトルフレーム - プレイ開始フレーム) / 60;
+        const 速度 = 2 + Math.pow(経過秒数, 2) / 2000;
+        this.laneValue = レーン;
+        if (方向 < 2) { 
+            this.x = 中心X + (レーン * マス); this.y = (方向 === 0) ? -40 : 440; 
+            this.dx = 0; this.dy = (方向 === 0) ? 速度 : -速度; 
+            this.タイプ = "青"; 
+        } else { 
+            this.x = (方向 === 2) ? -40 : 440; this.y = 中心Y + (レーン * マス); 
+            this.dx = (方向 === 2) ? 速度 : -速度; this.dy = 0; 
+            this.タイプ = "赤"; 
+        }
+        this.かすり済み = false;
+    }
+    更新() { this.x += this.dx; this.y += this.dy; }
+    描画() {
+        ctx.save(); ctx.translate(this.x, this.y); 
+        ctx.fillStyle = (this.タイプ === "青") ? `rgb(${COLOR_BLUE})` : `rgb(${COLOR_RED})`;
+        ctx.beginPath(); for (let i = 0; i < 8; i++) { const r = (i % 2 === 0) ? 16 : 6; const a = (Math.PI / 4) * i + Math.PI/4; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+        ctx.closePath(); ctx.fill(); ctx.restore();
+    }
+}
+
+class Spark {
+    constructor(x, y, rgbColor, isDeath = false) {
+        this.x = x; this.y = y; this.isDeath = isDeath;
+        const range = isDeath ? Math.random() * 16 + 6 : 8;
+        const angle = Math.random() * Math.PI * 2;
+        this.vx = Math.cos(angle) * range;
+        this.vy = Math.sin(angle) * range;
+        this.life = 1.0;
+        this.size = isDeath ? Math.random() * 10 + 5 : Math.random() * 4 + 2;
+        this.decay = isDeath ? Math.random() * 0.02 + 0.01 : 0.05;
+        this.gravity = isDeath ? 0.2 : 0;
+        this.color = rgbColor;
+    }
+    更新() { this.x += this.vx; this.y += this.vy; this.vy += this.gravity; this.life -= this.decay; }
+    描画() {
+        ctx.fillStyle = `rgba(${this.color}, ${this.life})`;
+        ctx.fillRect(this.x, this.y, this.size, this.size);
+    }
+}
+
+function 描画背景(isBattle) {
+    タイトルフレーム++;
+    ctx.fillStyle = (モード === "NORMAL") ? "#B3E5FC" : (モード === "HARD") ? "#000" : "#616161";
+    ctx.fillRect(0, 0, 400, 400);
+    if (isBattle) return;
+    if (モード === "NORMAL") {
+        ctx.fillStyle = "rgba(255,255,255,0.6)";
+        for(let i=0; i<4; i++) {
+            let speed = 0.3 + i * 0.2, cx = (タイトルフレーム * speed + i * 120) % 520 - 100, cy = 40 + i * 40;
+            ctx.beginPath(); ctx.arc(cx, cy, 20, 0, 7); ctx.arc(cx+25, cy, 25, 0, 7); ctx.arc(cx+50, cy, 20, 0, 7); ctx.fill();
+        }
+    } else if (モード === "HARD") {
+        if (タイトルフレーム % 2 === 0) {
+            メニューエフェクト.push({ x: Math.random() * 400, y: 410, v: Math.random() * 3 + 2, s: Math.random() * 15 + 5, l: 1.0, h: Math.random() * 30 });
+        }
+        for (let i = メニューエフェクト.length - 1; i >= 0; i--) {
+            let p = メニューエフェクト[i]; p.y -= p.v; p.l -= 0.01;
+            ctx.fillStyle = `hsla(${p.h}, 100%, 50%, ${p.l})`; ctx.fillRect(p.x, p.y, p.s, p.s);
+            if (p.l <= 0) メニューエフェクト.splice(i, 1);
+        }
+    } else {
+        // --- EXPERTモード：絶望の荒野演出（メニュー画面のみ） ---
+        
+        // 1. 遠景の山脈シルエット（黒）
+        ctx.fillStyle = "#333";
+        ctx.beginPath();
+        ctx.moveTo(0, 320);
+        // ランダムに見えるが固定の起伏を描画
+        const peaks = [
+            [50, 280], [100, 310], [150, 260], [200, 300], 
+            [250, 270], [300, 310], [350, 290], [400, 320]
+        ];
+        peaks.forEach(p => ctx.lineTo(p[0], p[1]));
+        ctx.lineTo(400, 400);
+        ctx.lineTo(0, 400);
+        ctx.closePath();
+        ctx.fill();
+
+        // 2. 地面（より濃いグレー）
+        ctx.fillStyle = "#444";
+        ctx.fillRect(0, 320, 400, 80);
+
+        // 3. 枯れ木のシルエット
+        function drawDeadTree(x, y, scale) {
+            ctx.strokeStyle = "#222";
+            ctx.lineWidth = 3 * scale;
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x - 5 * scale, y - 40 * scale); // 幹
+            // 枝
+            ctx.moveTo(x - 3 * scale, y - 15 * scale); ctx.lineTo(x + 10 * scale, y - 25 * scale);
+            ctx.moveTo(x - 4 * scale, y - 25 * scale); ctx.lineTo(x - 15 * scale, y - 35 * scale);
+            ctx.moveTo(x - 5 * scale, y - 35 * scale); ctx.lineTo(x + 5 * scale, y - 50 * scale);
+            ctx.stroke();
+        }
+        ctx.save();
+        ctx.globalAlpha = 0.7;
+        drawDeadTree(70, 340, 1.2);
+        drawDeadTree(330, 330, 1.0);
+        drawDeadTree(210, 350, 0.8);
+        ctx.restore();
+
+        // 4. 土ぼこりエフェクト（グレーのパーティクル）
+        if (タイトルフレーム % 5 === 0) {
+            メニューエフェクト.push({ 
+                x: Math.random() * 400, 
+                y: 200 + Math.random() * 150, // 山の周辺に発生
+                vx: -0.5 - Math.random() * 1.0, // 左に流れる
+                vy: -0.2 + Math.random() * 0.4,
+                s: 2 + Math.random() * 4, 
+                l: 0.5 + Math.random() * 0.5, // 透明度
+                // 土っぽいグレー
+                c: `rgb(${100 + Math.random()*50}, ${90 + Math.random()*40}, ${80 + Math.random()*30})`
+            });
+        }
+        for (let i = メニューエフェクト.length - 1; i >= 0; i--) {
+            let p = メニューエフェクト[i]; 
+            p.x += p.vx; 
+            p.y += p.vy;
+            p.l -= 0.005; // ゆっくり消える
+            ctx.fillStyle = p.c;
+            ctx.globalAlpha = p.l;
+            ctx.fillRect(p.x, p.y, p.s, p.s);
+            if (p.l <= 0 || p.x < -10) メニューエフェクト.splice(i, 1);
+        }
+        ctx.globalAlpha = 1.0; // アルファをリセット
+    }
+}
+
+function loop() {
+    ctx.clearRect(0, 0, 400, 400);
+    描画背景(!(ゲーム開始前 || ゲーム終了));
+
+    if (ゲーム開始前 || ゲーム終了) {
+        for (let i = パーティクル.length - 1; i >= 0; i--) {
+            パーティクル[i].更新(); パーティクル[i].描画();
+            if (パーティクル[i].life <= 0) パーティクル.splice(i, 1);
+        }
+
+        if (ゲーム終了 && Date.now() - 死亡時刻 < 300) {
+            死亡演出中 = true;
+        } else {
+            死亡演出中 = false;
+            ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(0, 0, 400, 400);
+            ctx.textAlign = "center";
+            if (ゲーム開始前) {
+                ctx.fillStyle = "#FFF"; ctx.font = "bold 34px sans-serif"; ctx.fillText("トゲトゲ・バトル", 200, 110);
+                ctx.font = "16px sans-serif"; ctx.fillText("← → キーで選択 / SPACE で開始", 200, 160);
+            } else {
+                ctx.fillStyle = 敗北色; ctx.font = "bold 42px sans-serif"; ctx.fillText("GAME OVER", 200, 80);
+                
+                ctx.fillStyle = "#FFF";
+                ctx.font = "18px sans-serif";
+                const 秒 = Math.floor((死亡フレーム - プレイ開始フレーム) / 60);
+
+                ctx.textAlign = "left";
+                ctx.fillText("TIME:", 110, 130); ctx.textAlign = "right"; ctx.fillText(秒 + "s", 290, 130);
+                ctx.textAlign = "left";
+                ctx.fillText("BONUS:", 110, 160); ctx.textAlign = "right"; ctx.fillText(Math.floor(かすりボーナス).toString(), 290, 160);
+                ctx.textAlign = "left";
+                ctx.font = "bold 22px sans-serif";
+                ctx.fillText("SCORE:", 110, 200); ctx.textAlign = "right"; ctx.fillText(Math.floor(スコア).toString(), 290, 200);
+
+                ctx.textAlign = "center";
+                ctx.font = "14px sans-serif"; ctx.fillText("SPACE でリトライ", 200, 240);
+            }
+            const ms = ["NORMAL", "HARD", "EXPERT"], cs = ["#7FB3FF", "#FFAB19", "#FF4C4C"];
+            ms.forEach((m, i) => {
+                const isSelected = (モード === m);
+                ctx.fillStyle = isSelected ? cs[i] : "#444";
+                ctx.beginPath(); ctx.roundRect(35 + i * 125, 290, 85, 45, 12); ctx.fill();
+                if (isSelected) { ctx.strokeStyle = "#FFF"; ctx.lineWidth = 3; ctx.stroke(); }
+                ctx.fillStyle = "#FFF"; ctx.font = "bold 13px sans-serif"; ctx.fillText(m, 77 + i * 125, 318);
+            });
+        }
+    } else {
+        ctx.save();
+        if (シェイク > 0) { ctx.translate((Math.random() - 0.5) * シェイク, (Math.random() - 0.5) * シェイク); シェイク *= 0.9; }
+        
+        ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
+        ctx.fillRect(中心X - 100, 中心Y - 20, 200, 40); ctx.fillRect(中心X - 20, 中心Y - 100, 40, 200);
+
+        if (!カウントダウン中) {
+            const 経過秒数 = (タイトルフレーム - プレイ開始フレーム) / 60;
+            if (Math.random() < 0.045 + (経過秒数 / 1000)) たまリスト.push(new たま());
+            
+            for (let i = たまリスト.length - 1; i >= 0; i--) {
+                const t = たまリスト[i]; t.更新(); t.描画();
+                const targetPos = (t.タイプ === "青") ? { x: 中心X + 青X * マス, y: 中心Y } : { x: 中心X, y: 中心Y + 赤Y * マス };
+                const dx = Math.abs(t.x - targetPos.x), dy = Math.abs(t.y - targetPos.y);
+
+                if (dx < 18 && dy < 18) {
+                    ゲーム終了 = true; 
+                    死亡時刻 = Date.now(); 
+                    死亡フレーム = タイトルフレーム;
+                    シェイク = 30;
+                    playSound(100, "sawtooth", 0.5, 0.3);
+                    playSound(50, "sine", 0.8, 0.5);
+                    let burstColor = (青X === 0 && 赤Y === 0) ? (t.タイプ === "青" ? COLOR_BLUE_PURPLE : COLOR_RED_PURPLE) : (t.タイプ === "青" ? COLOR_BLUE : COLOR_RED);
+                    敗北色 = `rgb(${burstColor})`;
+                    for(let j=0; j<160; j++) パーティクル.push(new Spark(targetPos.x, targetPos.y, burstColor, true));
+                }
+                
+                if (!t.かすり済み && !ゲーム終了) {
+                    const distToCenter = (t.タイプ === "青") ? Math.abs(t.y - 中心Y) : Math.abs(t.x - 中心X);
+                    if (distToCenter < マス + 10) {
+                        const 前回のプレイヤーレーン = (t.タイプ === "青") ? 前回の青X : 前回の赤Y;
+                        const 現在のプレイヤーレーン = (t.タイプ === "青") ? 青X : 赤Y;
+                        if (t.laneValue === 前回のプレイヤーレーン && 前回のプレイヤーレーン !== 現在のプレイヤーレーン) {
+                            t.かすり済み = true;
+                            スコア += 5;
+                            かすりボーナス += 5;
+                            シェイク = 15;
+                            playSound(1200, "sine", 0.2, 0.15);
+                            playSound(1800, "sine", 0.1, 0.1);
+                            for(let j=0; j<20; j++) パーティクル.push(new Spark(t.x, t.y, COLOR_WHITE));
+                        }
+                    }
+                }
+                if (t.x < -60 || t.x > 460 || t.y < -60 || t.y > 460) たまリスト.splice(i, 1);
+            }
+            スコア += 0.015;
+            前回の青X = 青X; 前回の赤Y = 赤Y;
+        }
+
+        if (青X === 0 && 赤Y === 0) {
+            ctx.fillStyle = `rgba(${COLOR_PURPLE}, 0.85)`; 
+            ctx.beginPath(); ctx.roundRect(中心X - 20, 中心Y - 20, 40, 40, 10); ctx.fill();
+        } else {
+            ctx.fillStyle = `rgba(${COLOR_BLUE}, 0.75)`;
+            ctx.beginPath(); ctx.roundRect(中心X + 青X * マス - 20, 中心Y - 20, 40, 40, 10); ctx.fill();
+            ctx.fillStyle = `rgba(${COLOR_RED}, 0.75)`;
+            ctx.beginPath(); ctx.roundRect(中心X - 20, 中心Y + 赤Y * マス - 20, 40, 40, 10); ctx.fill();
+        }
+
+        for (let i = パーティクル.length - 1; i >= 0; i--) {
+            パーティクル[i].更新(); パーティクル[i].描画();
+            if (パーティクル[i].life <= 0) パーティクル.splice(i, 1);
+        }
+        ctx.restore();
+
+        if (カウントダウン中) { 
+            ctx.fillStyle = "rgba(255,255,255,0.3)"; ctx.fillRect(0,0,400,400); 
+            ctx.fillStyle = "#FFF"; ctx.font = "bold 80px sans-serif"; 
+            ctx.textAlign = "center";
+            ctx.fillText(カウント, 200, 230); 
+        }
+    }
+    
+    if (!(ゲーム開始前 || ゲーム終了)) {
+        ctx.fillStyle = "rgba(255,255,255,0.5)"; ctx.font = "bold 22px sans-serif"; ctx.textAlign = "left"; ctx.fillText("SCORE: " + Math.floor(スコア), 25, 40);
+    }
+    
+    requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
